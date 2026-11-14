@@ -49,7 +49,7 @@ import { ProInlineCta } from "@/components/ProCta";
 export type View = "overview" | "issues" | "agents" | "history" | "email" | "feedback";
 
 const TRUST_BANNER =
-  "Your findings are served by this Strix viewer and are not sent to Strix Cloud.";
+  "Your findings are served by ZANAX Security Lab and are not sent to an external cloud.";
 
 const SEVERITY_ORDER: VulnerabilitySeverity[] = ["critical", "high", "medium", "low"];
 const POLL_MS = 500;
@@ -290,15 +290,15 @@ export default function App() {
         <div className="border-b border-[#222]">
           <div className="max-w-[88rem] mx-auto px-3 sm:px-6 py-4 flex items-center gap-1.5">
             <a
-              href={ctaUrl("https://app.strix.ai", "logo")}
+              href="/"
               target="_blank"
               rel="noopener noreferrer"
-              onClick={() => trackCta("logo", "topbar")}
+              onClick={(event) => event.preventDefault()}
               className="flex items-center gap-1.5 opacity-90 transition-opacity hover:opacity-100 lg:hidden"
-              title="Open Strix Cloud"
+              title="ZANAX Security Lab"
             >
-              <img src="./logo.png" alt="Strix" className="w-10 h-8 object-cover" />
-              <div className="text-base text-white font-medium tracking-tight">Strix</div>
+              <img src="./zanax-mark.svg" alt="ZANAX" className="w-8 h-8 object-contain" />
+              <div className="text-base text-white font-semibold tracking-[0.16em]">ZANAX</div>
             </a>
             {run && <LiveIndicator finished={run.finished} />}
             <div className="ml-auto flex items-center gap-3">
@@ -376,10 +376,10 @@ export default function App() {
           ) : run?.raw.no_runs === true ? (
             <div className="rounded-xl border border-[#222] bg-[rgba(255,255,255,0.02)] p-10 text-center">
               <Radar className="mx-auto mb-3 h-7 w-7 text-[#666]" aria-hidden="true" />
-              <h1 className="text-lg font-semibold text-white">Strix Viewer is ready</h1>
+              <h1 className="text-lg font-semibold text-white">ZANAX Security Lab is ready</h1>
               <p className="mx-auto mt-2 max-w-lg text-sm text-[#888]">
                 No scan results have been published yet. This viewer does not execute scans;
-                an independently managed, authorized Strix worker can publish completed results here.
+                an independently managed, authorized worker can publish completed results here.
               </p>
             </div>
           ) : run && counts ? (
