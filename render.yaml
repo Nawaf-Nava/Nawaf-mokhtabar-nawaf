@@ -10,9 +10,5 @@ services:
     envVars:
       - key: STRIX_RUNS_DIR
         value: /tmp/strix_runs
-      - key: STRIX_VIEWER_USERNAME
-        sync: false
-      - key: STRIX_VIEWER_PASSWORD
-        sync: false
       - key: STRIX_WORKER_TOKEN
         generateValue: true
