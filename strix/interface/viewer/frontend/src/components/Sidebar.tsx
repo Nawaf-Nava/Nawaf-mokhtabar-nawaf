@@ -213,7 +213,7 @@ export default function Sidebar({
                 </span>
               </a>
               <a
-                href={ctaUrl("https://app.strix.ai", "logo")}
+                href={ctaUrl("https://app.zanax.local", "logo")}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={() => trackCta("logo", "sidebar")}
@@ -285,7 +285,7 @@ export default function Sidebar({
               onClick={() =>
                 openUpgrade(
                   "pr_reviews",
-                  "Strix reviews every pull request and flags exploitable changes before they merge."
+                  "ZANAX reviews every pull request and flags exploitable changes before they merge."
                 )
               }
             />
