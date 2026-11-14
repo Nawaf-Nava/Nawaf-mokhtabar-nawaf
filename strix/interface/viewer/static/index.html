@@ -12,27 +12,79 @@
   <body>
     <script>
       (() => {
-        const brand = () => {
-          document.title = "ZANAX | Security Lab";
-          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-          let node;
-          while ((node = walker.nextNode())) {
-            if (node.parentElement && node.parentElement.closest("script,style,pre,code,textarea")) continue;
-            if (/strix/i.test(node.nodeValue || "")) node.nodeValue = node.nodeValue.replace(/strix/gi, "ZANAX");
-          }
-          document.querySelectorAll("*").forEach((el) => {
-            for (const attr of ["title", "aria-label", "alt"]) {
-              const value = el.getAttribute && el.getAttribute(attr);
-              if (value && /strix/i.test(value)) el.setAttribute(attr, value.replace(/strix/gi, "ZANAX"));
+        const replaceBrand = (value) =>
+          typeof value === "string" ? value.replace(/strix/gi, "ZANAX") : value;
+
+        const brandElement = (el) => {
+          if (!(el instanceof Element)) return;
+
+          for (const attr of ["title", "aria-label", "alt"]) {
+            const value = el.getAttribute(attr);
+            if (value && /strix/i.test(value)) {
+              el.setAttribute(attr, replaceBrand(value));
             }
-          });
-          document.querySelectorAll('a[href*="strix.ai"]').forEach((a) => { a.href = "/"; a.removeAttribute("target"); });
-          document.querySelectorAll('img[src*="logo.png"], img[alt*="Strix"]').forEach((img) => {
-            img.src = "./zanax-mark.svg"; img.alt = "ZANAX"; img.classList.add("object-contain");
-          });
+          }
+
+          if (el.matches('a[href*="strix.ai"]')) {
+            el.setAttribute("href", "/");
+            el.removeAttribute("target");
+          }
+
+          if (el.matches('img[src*="logo.png"], img[alt*="Strix" i]')) {
+            el.setAttribute("src", "./zanax-mark.svg");
+            el.setAttribute("alt", "ZANAX");
+            el.classList.add("object-contain");
+          }
         };
-        new MutationObserver(brand).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-        brand();
+
+        const brandNode = (node) => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const parent = node.parentElement;
+            if (
+              parent &&
+              !parent.closest("script,style,pre,code,textarea") &&
+              /strix/i.test(node.nodeValue || "")
+            ) {
+              node.nodeValue = replaceBrand(node.nodeValue);
+            }
+            return;
+          }
+
+          if (!(node instanceof Element)) return;
+          brandElement(node);
+
+          if (node.matches("script,style,pre,code,textarea")) return;
+
+          const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+          let textNode;
+          while ((textNode = walker.nextNode())) {
+            const parent = textNode.parentElement;
+            if (
+              parent &&
+              !parent.closest("script,style,pre,code,textarea") &&
+              /strix/i.test(textNode.nodeValue || "")
+            ) {
+              textNode.nodeValue = replaceBrand(textNode.nodeValue);
+            }
+          }
+
+          node.querySelectorAll("*").forEach(brandElement);
+        };
+
+        document.title = "ZANAX | Security Lab";
+        brandNode(document.body);
+
+        // Process only newly inserted DOM. A full-document scan on every React
+        // update caused unnecessary work and could make the viewer unresponsive.
+        const observer = new MutationObserver((records) => {
+          for (const record of records) {
+            for (const addedNode of record.addedNodes) brandNode(addedNode);
+          }
+        });
+        observer.observe(document.getElementById("root") || document.body, {
+          childList: true,
+          subtree: true
+        });
       })();
     </script>
     <div id="root"></div>
