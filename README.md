@@ -211,11 +211,14 @@ See the [viewer documentation](https://docs.strix.ai/usage/viewer) for the optio
 
 This repository includes a Render Blueprint in `render.yaml` and a dedicated
 `Dockerfile.render`. The service starts the viewer automatically on Render's
-`PORT` (bound to `0.0.0.0`) and stores uploaded run artifacts under the
-persistent disk mounted at `/data/strix_runs`. The viewer remains available
-when no runs exist or an external worker is offline. `/health` is the
-unauthenticated Render health-check endpoint; it reports only web-process
-health.
+`PORT` (bound to `0.0.0.0`) and stores uploaded run artifacts in the
+container's temporary writable filesystem at `/tmp/strix_runs`. This is
+intentionally ephemeral for the Render Free plan: results are available while
+the current instance retains them, but may disappear after a restart,
+redeploy, or instance replacement. Export important reports before that.
+The viewer remains available when no runs exist or an external worker is
+offline. `/health` is the unauthenticated Render health-check endpoint; it
+reports only web-process health.
 
 **The Render web service does not execute scans.** Strix's engine uses a local
 Docker daemon and creates sandbox containers with added `NET_ADMIN`/`NET_RAW`
@@ -239,12 +242,11 @@ your worker's own operations and access controls.
 
 #### Render configuration
 
-1. Create a Render Web Service from this repository and use the Blueprint, or
-  set the Dockerfile path to `Dockerfile.render`.
-2. Use a paid service plan that supports a persistent disk. Keep one instance:
-  Render disks attach to one service instance and prevent horizontal scaling
-  and zero-downtime deploys. The Blueprint requests a 10 GB disk at `/data`;
-  size it for your retention needs.
+1. Create a Render Web Service from this repository and use the Blueprint.
+  The Blueprint uses the root `Dockerfile` and the Free plan.
+2. No persistent disk is attached. Results are stored temporarily inside the
+  running container and can be lost on restart, redeploy, or instance
+  replacement. Keep one instance for predictable in-memory/session behavior.
 3. Configure these service environment variables as secrets in Render (never
   commit their values):
 
@@ -253,7 +255,7 @@ your worker's own operations and access controls.
   | `STRIX_VIEWER_USERNAME` | Yes | HTTP Basic auth username for the public viewer. |
   | `STRIX_VIEWER_PASSWORD` | Yes | HTTP Basic auth password, at least 20 characters. |
   | `STRIX_WORKER_TOKEN` | Blueprint-generated | Render generates a 256-bit bearer secret for completed-run uploads. Copy it securely to the isolated worker; remove the variable to disable uploads. |
-  | `STRIX_RUNS_DIR` | Set by Blueprint | Persistent run storage path (`/data/strix_runs`). The startup script maps the CLI's `./strix_runs` to this disk. |
+  | `STRIX_RUNS_DIR` | Set by Blueprint | Temporary run storage path (`/tmp/strix_runs`); contents are not durable. |
   | `PORT` | Render-managed | Public HTTP listener port; do not override unless needed. |
 
   Generate independent high-entropy credentials with a password manager. The
