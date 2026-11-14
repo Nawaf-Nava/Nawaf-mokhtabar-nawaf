@@ -16,8 +16,6 @@ COPY scripts/tui_sidecar_hook.py ./scripts/tui_sidecar_hook.py
 RUN uv sync --frozen --no-dev
 ENV PATH="/app/.venv/bin:${PATH}"
 
-RUN mkdir -p /data/strix_runs
-
 EXPOSE 10000
 
 COPY scripts/start.sh /app/start.sh
