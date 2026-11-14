@@ -750,14 +750,10 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                     "Set-Cookie",
                     f"{state.cookie_name}={state.session_token}; Path=/; HttpOnly; SameSite=Strict",
                 )
-            elif (
-                is_index
-                and os.environ.get("STRIX_VIEWER_USERNAME")
-                and os.environ.get("STRIX_VIEWER_PASSWORD")
-            ):
-                # The request has passed deployment Basic auth. Use its
-                # credential as the operator's bootstrap without exposing the
-                # internal session token in a URL or page content.
+            elif is_index:
+                # Public demo mode: mint a per-browser session cookie. This
+                # is not an access-control barrier; the viewer and run data
+                # are intentionally public when deployment Basic auth is off.
                 self.send_header(
                     "Set-Cookie",
                     f"{state.cookie_name}={state.session_token}; Path=/; HttpOnly; Secure; "
