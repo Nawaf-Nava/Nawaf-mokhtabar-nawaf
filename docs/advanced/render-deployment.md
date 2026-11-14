@@ -24,14 +24,18 @@ does not accept scan instructions or targets.
 
 The root `render.yaml` defines one Docker Web Service with:
 
-- `Dockerfile.render` as its Dockerfile.
-- One instance, because Render persistent disks are single-instance.
-- A 10 GB persistent disk at `/data`.
-- `STRIX_RUNS_DIR=/data/strix_runs` and HTTP health path `/health`.
+- The root `Dockerfile` as its Dockerfile.
+- One Free instance with no persistent disk.
+- `STRIX_RUNS_DIR=/tmp/strix_runs` and HTTP health path `/health`.
+- Temporary result storage inside the running container.
 - No scan engine, Docker daemon, LLM secret, or public worker service.
 
-The startup manager checks hosted credentials and the mounted disk, then
+The startup manager checks hosted credentials, creates the temporary results
+directory, links it to the CLI's expected `/app/strix_runs` path, then
 executes `strix view --empty --host 0.0.0.0 --port "$PORT" --no-open` as PID 1.
+Results remain available only while the current container filesystem retains
+them; a restart, redeploy, or instance replacement can erase them. Download
+or export anything important before the service is recycled.
 The viewer's existing session-cookie checks still protect scan data and
 mutations. HTTP Basic authentication is additionally required for public
 viewer routes when configured; health probes bypass it. Use the Render HTTPS
@@ -48,7 +52,8 @@ Set these in the Render service's environment settings as secrets:
 | `STRIX_VIEWER_PASSWORD` | Yes | At least 20 characters; use a generated secret. |
 | `STRIX_WORKER_TOKEN` | Blueprint-generated | Render generates a base64-encoded 256-bit value. Copy it securely to the trusted worker; remove the variable to disable upload. |
 
-The Blueprint sets `STRIX_RUNS_DIR`. Render supplies `PORT` (normally 10000);
+The Blueprint sets `STRIX_RUNS_DIR=/tmp/strix_runs` for temporary storage.
+Render supplies `PORT` (normally 10000);
 leave it Render-managed. Do not set `LLM_API_KEY` on the viewer; the web
 service does not scan. A scan worker needs its own model/provider credentials
 and normal Strix settings in its own secret store.
@@ -71,7 +76,9 @@ rejects duplicate names and traversal/symlinks, and caps compressed and
 uncompressed content. Stored artifacts are visible under the viewer's past
 runs feature after the existing account verification gate.
 
-No results are stored on Render until this separate, explicit upload occurs.
+Uploaded results are stored in the viewer container's temporary filesystem.
+They are not durable and can disappear when Render restarts or replaces the
+instance.
 The worker is not provisioned or supervised by this Blueprint; Render's
 external worker feature, another cloud service, or customer-controlled
 Docker-capable host may be used, subject to security review and target
@@ -88,7 +95,7 @@ events, coverage, and SARIF. Other artifacts are intentionally excluded.
 
 Validate deployment health at `GET /health`; it returns `{"status":"ok"}`.
 Worker upload availability and actual Docker execution are not asserted by
-that endpoint. The web service requires a paid Render plan for its persistent
-disk. Size resources based on viewer traffic and retained output; size and
-secure the engine worker separately. Render's plan-specific memory/CPU/build
-limits are not inferred by this repository.
+that endpoint. The viewer Blueprint targets Render's Free plan and does not request a
+persistent disk. This is suitable for temporary demonstrations, not durable
+report retention. Size and secure the engine worker separately. Render's
+plan-specific memory/CPU/build limits are not inferred by this repository.
