@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: strix-viewer
+    env: docker
+    dockerfilePath: Dockerfile.render
+    plan: starter
+    region: oregon
+    numInstances: 1
+    healthCheckPath: /health
+    disk:
+      name: strix-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: STRIX_RUNS_DIR
+        value: /data/strix_runs
+      - key: STRIX_VIEWER_USERNAME
+        sync: false
+      - key: STRIX_VIEWER_PASSWORD
+        sync: false
+      - key: STRIX_WORKER_TOKEN
+        generateValue: true
+      - key: LLM_API_KEY
+        sync: false

@@ -55,6 +55,11 @@ def run_view(argv: list[str]) -> None:
         action="store_true",
         help="Do not open the browser automatically.",
     )
+    parser.add_argument(
+        "--empty",
+        action="store_true",
+        help="Serve the viewer without requiring a previous run.",
+    )
     args = parser.parse_args(argv)
 
     console = Console()
@@ -66,7 +71,13 @@ def run_view(argv: list[str]) -> None:
         )
         raise SystemExit(1)
 
-    run_dir = _resolve_run_dir(args.run, console)
+    if args.empty and args.run:
+        parser.error("--empty cannot be combined with a run name")
+    if args.empty:
+        run_dir = runs_base_dir() / ".viewer"
+        runs_base_dir().mkdir(parents=True, exist_ok=True)
+    else:
+        run_dir = _resolve_run_dir(args.run, console)
 
     httpd, url, token = serve(
         run_dir,

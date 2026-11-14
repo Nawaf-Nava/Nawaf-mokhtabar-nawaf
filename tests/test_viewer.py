@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sqlite3
 import urllib.error
 import urllib.request
+import zipfile
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
+
+import pytest
 
 from strix.core.paths import latest_run_dir, runs_base_dir
 from strix.interface.viewer.cli import _state_label, run_view
@@ -24,9 +28,6 @@ from strix.interface.viewer.transcript import (
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
-
-    import pytest
-
 
 def _make_run(base: Path, name: str, *, status: str, end_time: str | None) -> Path:
     run_dir = base / "strix_runs" / name
@@ -245,6 +246,145 @@ def test_server_serves_api_and_static(tmp_path: Path, monkeypatch: pytest.Monkey
         status, ctype, body = _get(f"{url}/agents/root")
         assert status == 200
         assert b"<div id=root>" in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_render_health_and_basic_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = _make_run(tmp_path, "hosted", status="completed", end_time="2026-01-01T00:00:00Z")
+    _bundle(tmp_path, monkeypatch)
+    monkeypatch.setenv("STRIX_VIEWER_USERNAME", "operator")
+    monkeypatch.setenv("STRIX_VIEWER_PASSWORD", "a-long-test-password-123")
+
+    httpd, url, _ = serve(run_dir, open_browser=False)
+    try:
+        # Render health probes deliberately bypass viewer authentication.
+        _, _, body = _get(f"{url}/health")
+        assert json.loads(body) == {"status": "ok"}
+
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(url + "/")  # noqa: S310  # nosec B310
+        assert error.value.code == 401
+
+        credentials = __import__("base64").b64encode(b"operator:a-long-test-password-123").decode()
+        request = urllib.request.Request(  # noqa: S310 - local test server
+            url + "/", headers={"Authorization": f"Basic {credentials}"}
+        )
+        with urllib.request.urlopen(request) as response:  # noqa: S310  # nosec B310
+            cookie = str(response.headers.get("Set-Cookie", ""))
+        assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=Strict" in cookie
+
+        api_request = urllib.request.Request(  # noqa: S310 - local test server
+            url + "/api/run",
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Cookie": cookie.split(";", 1)[0],
+            },
+        )
+        with urllib.request.urlopen(api_request) as response:  # noqa: S310  # nosec B310
+            assert response.status == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_worker_upload_authenticates_and_stores_completed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bundle(tmp_path, monkeypatch)
+    monkeypatch.delenv("STRIX_VIEWER_USERNAME", raising=False)
+    monkeypatch.delenv("STRIX_VIEWER_PASSWORD", raising=False)
+    monkeypatch.setenv("STRIX_WORKER_TOKEN", "w" * 40)
+
+    payload = io.BytesIO()
+    record = {"run_name": "worker-run", "status": "completed", "end_time": "2026-01-01T00:00:00Z"}
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("run.json", json.dumps(record))
+        archive.writestr("vulnerabilities.json", "[]")
+
+    viewer_dir = tmp_path / "strix_runs" / ".viewer"
+    viewer_dir.mkdir(parents=True)
+    httpd, url, token = serve(viewer_dir, open_browser=False)
+    try:
+        # The always-on viewer serves cleanly before the worker has produced data.
+        _, _, empty_body = _get(f"{url}/api/run")
+        assert json.loads(empty_body)["no_runs"] is True
+
+        unauthorized = urllib.request.Request(  # noqa: S310 - local test server
+            url + "/api/worker/runs",
+            data=payload.getvalue(),
+            headers={"X-Strix-Run-Name": "worker-run"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(unauthorized)  # noqa: S310  # nosec B310
+        assert error.value.code == 401
+
+        request = urllib.request.Request(  # noqa: S310 - local test server
+            url + "/api/worker/runs",
+            data=payload.getvalue(),
+            headers={
+                "Authorization": f"Bearer {'w' * 40}",
+                "Content-Type": "application/zip",
+                "X-Strix-Run-Name": "worker-run",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:  # noqa: S310  # nosec B310
+            assert response.status == 201
+            assert json.loads(response.read())["ok"] is True
+
+        stored = tmp_path / "strix_runs" / "worker-run"
+        assert json.loads((stored / "run.json").read_text()) == record
+        assert (stored / "vulnerabilities.json").read_text() == "[]"
+
+        # Default viewer polling discovers the latest worker result automatically.
+        cookie = _session_cookie(url, token)
+        _, _, loaded_body = _get(f"{url}/api/run", cookie=cookie)
+        assert json.loads(loaded_body)["run_name"] == "worker-run"
+
+        # Run names are immutable; repeat uploads never overwrite prior results.
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)  # noqa: S310  # nosec B310
+        assert error.value.code == 409
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_worker_upload_rejects_archive_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bundle(tmp_path, monkeypatch)
+    monkeypatch.delenv("STRIX_VIEWER_USERNAME", raising=False)
+    monkeypatch.delenv("STRIX_VIEWER_PASSWORD", raising=False)
+    monkeypatch.setenv("STRIX_WORKER_TOKEN", "t" * 40)
+
+    payload = io.BytesIO()
+    record = {"run_name": "bad-run", "status": "completed", "end_time": "2026-01-01T00:00:00Z"}
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("run.json", json.dumps(record))
+        archive.writestr("../outside.txt", "not allowed")
+
+    httpd, url, _ = serve(tmp_path / "strix_runs" / ".viewer", open_browser=False)
+    try:
+        request = urllib.request.Request(  # noqa: S310 - local test server
+            url + "/api/worker/runs",
+            data=payload.getvalue(),
+            headers={
+                "Authorization": f"Bearer {'t' * 40}",
+                "X-Strix-Run-Name": "bad-run",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)  # noqa: S310  # nosec B310
+        assert error.value.code == 400
+        assert not (tmp_path / "outside.txt").exists()
+        assert not (tmp_path / "strix_runs" / "bad-run").exists()
     finally:
         httpd.shutdown()
         httpd.server_close()

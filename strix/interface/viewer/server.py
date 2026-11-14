@@ -14,16 +14,22 @@ Design notes:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import mimetypes
+import os
+import re
 import secrets
+import shutil
+import tempfile
 import threading
 import webbrowser
+import zipfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 
 from strix.core.paths import run_record_path
@@ -43,6 +49,133 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_WORKER_RUN_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_WORKER_MAX_ARCHIVE_BYTES = 48 * 1024 * 1024
+_WORKER_MAX_UNPACKED_BYTES = 192 * 1024 * 1024
+_WORKER_MAX_FILES = 1000
+_WORKER_ALLOWED_FILES = frozenset(
+    {
+        "run.json",
+        "vulnerabilities.json",
+        "vulnerabilities.csv",
+        "penetration_test_report.md",
+        "findings.sarif",
+        "events.jsonl",
+        "coverage.json",
+        ".state/agents.json",
+        ".state/agents.db",
+    }
+)
+_WORKER_TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped", "interrupted"})
+
+
+class _RequestTooLargeError(Exception):
+    """The request body exceeded the endpoint's bounded input size."""
+
+
+def _worker_archive_paths(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo] | None:
+    """Validate the complete worker archive inventory before extracting files."""
+    infos: list[zipfile.ZipInfo] = []
+    seen: set[str] = set()
+    total_size = 0
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        path = PurePosixPath(info.filename)
+        name = path.as_posix()
+        if (
+            path.is_absolute()
+            or "\\" in info.filename
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or name in seen
+            or (
+                name not in _WORKER_ALLOWED_FILES
+                and not (path.parent.as_posix() == "vulnerabilities" and path.suffix == ".md")
+            )
+        ):
+            return None
+        # Reject symlinks and other non-regular ZIP members.
+        mode = (info.external_attr >> 16) & 0o170000
+        if mode not in (0, 0o100000):
+            return None
+        if info.file_size < 0 or info.file_size > _WORKER_MAX_UNPACKED_BYTES:
+            return None
+        total_size += info.file_size
+        if total_size > _WORKER_MAX_UNPACKED_BYTES:
+            return None
+        seen.add(name)
+        infos.append(info)
+    if not infos or len(infos) > _WORKER_MAX_FILES or "run.json" not in seen:
+        return None
+    return infos
+
+
+def _store_worker_run(  # noqa: PLR0911, PLR0912
+    base_dir: Path, run_name: str, payload: bytes
+) -> tuple[HTTPStatus, str]:
+    """Validate and atomically store one completed worker run archive."""
+    if not _WORKER_RUN_NAME.fullmatch(run_name) or run_name in {".", ".."}:
+        return HTTPStatus.BAD_REQUEST, "invalid_run_name"
+    if len(payload) > _WORKER_MAX_ARCHIVE_BYTES:
+        return HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "archive_too_large"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    destination = base_dir / run_name
+    if destination.exists():
+        return HTTPStatus.CONFLICT, "run_already_exists"
+
+    staging = Path(tempfile.mkdtemp(prefix=".worker-upload-", dir=base_dir))
+    try:
+        from io import BytesIO
+
+        try:
+            archive = zipfile.ZipFile(BytesIO(payload))
+        except (OSError, zipfile.BadZipFile):
+            return HTTPStatus.BAD_REQUEST, "invalid_archive"
+        with archive:
+            infos = _worker_archive_paths(archive)
+            if infos is None:
+                return HTTPStatus.BAD_REQUEST, "invalid_archive_contents"
+            for info in infos:
+                target = staging.joinpath(*PurePosixPath(info.filename).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, target.open("xb") as output:
+                    shutil.copyfileobj(source, output, length=64 * 1024)
+
+        try:
+            record: Any = json.loads((staging / "run.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return HTTPStatus.BAD_REQUEST, "invalid_run_record"
+        if not isinstance(record, dict):
+            return HTTPStatus.BAD_REQUEST, "run_not_complete_or_name_mismatch"
+        run_record = cast("dict[str, Any]", record)
+        if (
+            run_record.get("run_name") != run_name
+            or run_record.get("status") not in _WORKER_TERMINAL_STATUSES
+            or not run_record.get("end_time")
+        ):
+            return HTTPStatus.BAD_REQUEST, "run_not_complete_or_name_mismatch"
+        try:
+            destination.mkdir()
+        except FileExistsError:
+            return HTTPStatus.CONFLICT, "run_already_exists"
+        try:
+            staged_files = [path for path in staging.rglob("*") if path.is_file()]
+            staged_files.sort(key=lambda path: path.name == "run.json")
+            for path in staged_files:
+                target = destination / path.relative_to(staging)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                path.replace(target)
+        except OSError:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
+        return HTTPStatus.CREATED, "stored"  # noqa: TRY300
+    except (OSError, RuntimeError, zipfile.BadZipFile):
+        logger.warning("worker run upload failed while storing %s", run_name)
+        return HTTPStatus.BAD_REQUEST, "invalid_archive"
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def bundle_dir() -> Path:
@@ -155,7 +288,9 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
             parts = urlsplit(self.path)
             path = parts.path
             try:
-                if path.startswith("/api/"):
+                if path not in {"/health", "/api/health"} and not self._authorize_deployment():
+                    return
+                if path in {"/health", "/api/health"} or path.startswith("/api/"):
                     self._handle_api(path, parse_qs(parts.query))
                 else:
                     self._handle_static(path, parse_qs(parts.query))
@@ -163,15 +298,21 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                 # The browser closed the connection mid-response (e.g. it
                 # navigated away between polls). Not an error.
                 logger.debug("viewer client disconnected during %s", path)
+            except _RequestTooLargeError:
+                self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request_too_large"})
             except Exception:
                 # A bad request must never kill the worker thread.
                 logger.exception("viewer request failed: %s", path)
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"})
 
-        def do_POST(self) -> None:
+        def do_POST(self) -> None:  # noqa: PLR0912
             path = urlsplit(self.path).path
             try:
-                if path == "/api/event":
+                if path == "/api/worker/runs":
+                    self._handle_worker_run()
+                elif not self._authorize_deployment():
+                    return
+                elif path == "/api/event":
                     self._handle_event()
                 elif path == "/api/auth/otp/start":
                     self._handle_otp_start()
@@ -189,19 +330,73 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown endpoint"})
             except BrokenPipeError:
                 logger.debug("viewer client disconnected during POST %s", path)
+            except _RequestTooLargeError:
+                self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request_too_large"})
             except Exception:
                 # A bad request must never kill the worker thread.
                 logger.exception("viewer request failed: POST %s", path)
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal error"})
 
         def _read_body(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise _RequestTooLargeError from None
+            if length < 0 or length > _WORKER_MAX_ARCHIVE_BYTES:
+                raise _RequestTooLargeError
             raw = self.rfile.read(length) if length else b""
             try:
                 body = json.loads(raw or b"{}")
             except json.JSONDecodeError:
                 return {}
-            return body if isinstance(body, dict) else {}
+            return cast("dict[str, Any]", body) if isinstance(body, dict) else {}
+
+        def _authorize_deployment(self) -> bool:
+            """Require HTTP Basic auth when the hosted deployment enables it."""
+            username = os.environ.get("STRIX_VIEWER_USERNAME", "")
+            password = os.environ.get("STRIX_VIEWER_PASSWORD", "")
+            if not username and not password:
+                return True
+            supplied = self.headers.get("Authorization", "")
+            expected = f"Basic {base64.b64encode(f'{username}:{password}'.encode()).decode()}"
+            if supplied and secrets.compare_digest(supplied, expected):
+                return True
+            self.send_response(HTTPStatus.UNAUTHORIZED)
+            self.send_header("WWW-Authenticate", 'Basic realm="Strix Viewer", charset="UTF-8"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return False
+
+        def _handle_worker_run(self) -> None:
+            expected = os.environ.get("STRIX_WORKER_TOKEN", "")
+            supplied = self.headers.get("Authorization", "")
+            if not expected or not supplied.startswith("Bearer ") or not secrets.compare_digest(
+                supplied[7:], expected
+            ):
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                return
+            run_name = self.headers.get("X-Strix-Run-Name", "")
+            length_header = self.headers.get("Content-Length", "")
+            try:
+                length = int(length_header)
+            except ValueError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_content_length"})
+                return
+            if length <= 0 or length > _WORKER_MAX_ARCHIVE_BYTES:
+                self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "archive_too_large"})
+                return
+            payload = self.rfile.read(length)
+            if len(payload) != length:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "incomplete_upload"})
+                return
+            status, code = _store_worker_run(state.base_dir, run_name, payload)
+            self._send_json(
+                status,
+                {
+                    "ok": status == HTTPStatus.CREATED,
+                    "error": None if status == HTTPStatus.CREATED else code,
+                },
+            )
 
         # Funnel events the viewer is allowed to forward. This handler is the
         # trust boundary: only these event names, with only their known props,
@@ -234,12 +429,25 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
             self.send_response(HTTPStatus.NO_CONTENT)
             self.end_headers()
 
-        def _handle_api(self, path: str, query: dict[str, list[str]]) -> None:
+        def _handle_api(self, path: str, query: dict[str, list[str]]) -> None:  # noqa: PLR0911, PLR0912
             # The cross-run history list (/api/runs) unlocks its entries only for
             # a caller that holds this process's session capability *and* is
             # email verified, so merely reaching an exposed --host port never
             # leaks the run list (the payload still advertises the count as a
             # teaser).
+            if path in {"/health", "/api/health"}:
+                self._send_json(HTTPStatus.OK, {"status": "ok"})
+                return
+            if (
+                path == "/api/run"
+                and state.run_dir.name == ".viewer"
+                and not _iter_run_dirs(state.base_dir)
+            ):
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"no_runs": True, "run_name": None, "finished": True},
+                )
+                return
             if path == "/api/runs":
                 unlocked = self._has_session() and auth.is_verified()
                 payload = build_runs_payload(state.base_dir, verified=unlocked)
@@ -263,15 +471,35 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
 
             run_values = query.get("run")
             run_param = run_values[0] if run_values else None
-            run_dir = resolve_run_dir(state.base_dir, run_param, state.run_dir)
+            hosted_default = state.run_dir.name == ".viewer"
+            available_runs = _iter_run_dirs(state.base_dir) if hosted_default else []
+            default_run_dir = (
+                available_runs[0] if available_runs else state.run_dir
+            )
+            run_dir = resolve_run_dir(state.base_dir, run_param, default_run_dir)
             if run_dir is None:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown run"})
+                return
+
+            if hosted_default and run_dir == state.run_dir and path == "/api/run":
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"no_runs": True, "run_name": None, "finished": True},
+                )
                 return
 
             # Any run other than the one used to launch the viewer is part of the
             # email-gated history. The session check above applies to both paths;
             # verification adds a second gate for historical run data.
-            if run_dir.resolve() != state.run_dir.resolve() and not auth.is_verified():
+            if (
+                run_dir.resolve() != state.run_dir.resolve()
+                and not (
+                    hosted_default
+                    and default_run_dir != state.run_dir
+                    and run_dir.resolve() == default_run_dir.resolve()
+                )
+                and not auth.is_verified()
+            ):
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unverified"})
                 return
 
@@ -521,6 +749,19 @@ def _make_handler(state: _ViewerState) -> type[BaseHTTPRequestHandler]:
                 self.send_header(
                     "Set-Cookie",
                     f"{state.cookie_name}={state.session_token}; Path=/; HttpOnly; SameSite=Strict",
+                )
+            elif (
+                is_index
+                and os.environ.get("STRIX_VIEWER_USERNAME")
+                and os.environ.get("STRIX_VIEWER_PASSWORD")
+            ):
+                # The request has passed deployment Basic auth. Use its
+                # credential as the operator's bootstrap without exposing the
+                # internal session token in a URL or page content.
+                self.send_header(
+                    "Set-Cookie",
+                    f"{state.cookie_name}={state.session_token}; Path=/; HttpOnly; Secure; "
+                    "SameSite=Strict",
                 )
             self.end_headers()
             self.wfile.write(content)

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: strix-viewer
+    env: docker
+    dockerfilePath: Dockerfile.render
+    plan: starter
+    region: oregon
+    numInstances: 1
+    disk:
+      name: strix-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: STRIX_RUNS_DIR
+        value: /data/strix_runs
+      - key: STRIX_LLM
+        value: openai/gpt-4o
+      - key: LLM_API_KEY
+        sync: false

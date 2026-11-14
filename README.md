@@ -207,6 +207,79 @@ The dashboard shows the findings, a live map of the agent team, and past runs. N
 
 See the [viewer documentation](https://docs.strix.ai/usage/viewer) for the options and for reaching the viewer from another machine.
 
+### Deploying the viewer on Render
+
+This repository includes a Render Blueprint in `render.yaml` and a dedicated
+`Dockerfile.render`. The service starts the viewer automatically on Render's
+`PORT` (bound to `0.0.0.0`) and stores uploaded run artifacts under the
+persistent disk mounted at `/data/strix_runs`. The viewer remains available
+when no runs exist or an external worker is offline. `/health` is the
+unauthenticated Render health-check endpoint; it reports only web-process
+health.
+
+**The Render web service does not execute scans.** Strix's engine uses a local
+Docker daemon and creates sandbox containers with added `NET_ADMIN`/`NET_RAW`
+capabilities, and some tasks need additional devices or privileges. Render's
+documented Docker support builds and runs the service image; it does not
+provide a supported Docker daemon or privileged nested-container contract to
+this service. Do not set `DOCKER_HOST` to an unauthenticated public daemon or
+assume Docker-in-Docker works. For scans, use a separately managed,
+Docker-enabled and isolated worker in an environment you control. Keep its
+execution service private; only send results to the viewer.
+
+The optional `STRIX_WORKER_TOKEN` enables `POST /api/worker/runs` for a
+completed-run ZIP bundle. Uploads require a bearer token, a matching terminal
+`run.json`, a unique run name, and a tightly allowlisted file inventory; they
+are size-limited, staged, and never overwrite an existing run. The
+execution-free transport helper `scripts/upload_worker_run.py` can send a
+completed run from a separately operated worker. It **does not start a scan**.
+There is deliberately no public scan-submission or target-execution endpoint.
+Only run tests within explicitly authorized scope and enforce that scope in
+your worker's own operations and access controls.
+
+#### Render configuration
+
+1. Create a Render Web Service from this repository and use the Blueprint, or
+  set the Dockerfile path to `Dockerfile.render`.
+2. Use a paid service plan that supports a persistent disk. Keep one instance:
+  Render disks attach to one service instance and prevent horizontal scaling
+  and zero-downtime deploys. The Blueprint requests a 10 GB disk at `/data`;
+  size it for your retention needs.
+3. Configure these service environment variables as secrets in Render (never
+  commit their values):
+
+  | Variable | Required | Purpose |
+  | --- | --- | --- |
+  | `STRIX_VIEWER_USERNAME` | Yes | HTTP Basic auth username for the public viewer. |
+  | `STRIX_VIEWER_PASSWORD` | Yes | HTTP Basic auth password, at least 20 characters. |
+  | `STRIX_WORKER_TOKEN` | Blueprint-generated | Render generates a 256-bit bearer secret for completed-run uploads. Copy it securely to the isolated worker; remove the variable to disable uploads. |
+  | `STRIX_RUNS_DIR` | Set by Blueprint | Persistent run storage path (`/data/strix_runs`). The startup script maps the CLI's `./strix_runs` to this disk. |
+  | `PORT` | Render-managed | Public HTTP listener port; do not override unless needed. |
+
+  Generate independent high-entropy credentials with a password manager. The
+  viewer uses HTTPS at Render's public edge; the session cookie is HttpOnly,
+  Secure, and SameSite=Strict. `/health` intentionally remains reachable
+  without viewer credentials for Render's health monitor.
+4. Point `STRIX_VIEWER_URL` at the viewer's HTTPS origin on the isolated
+  worker, set the same `STRIX_WORKER_TOKEN` there, and set
+  `STRIX_RUNS_DIR` to the worker's local Strix results directory. After an
+  **authorized scan has independently completed**, run
+  `python scripts/upload_worker_run.py <run-name>` from the repository on the
+  worker. The worker must be operated separately; this deployment does not
+  create or supervise it.
+
+The Render image uses an editable install because the repository's wheel build
+hook requires Go 1.24+ to compile the optional TUI sidecar. The web service
+does not use that terminal UI. The regular `containers/Dockerfile` is left
+unchanged and remains the sandbox image definition. Render's resource capacity
+depends on the selected plan; the viewer is lightweight, but the scanner's
+separate Docker worker needs independently sized CPU, memory, storage, and
+network egress controls.
+
+See [the full Render deployment guide](docs/advanced/render-deployment.md)
+for the service settings, worker publishing protocol, supported artifacts,
+resource considerations, and operational limits.
+
 ---
 
 ## Usage Examples

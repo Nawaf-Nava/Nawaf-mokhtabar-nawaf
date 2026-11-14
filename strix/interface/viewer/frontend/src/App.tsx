@@ -49,7 +49,7 @@ import { ProInlineCta } from "@/components/ProCta";
 export type View = "overview" | "issues" | "agents" | "history" | "email" | "feedback";
 
 const TRUST_BANNER =
-  "Your findings stay on your machine. They're rendered here locally in your browser and never uploaded or stored by Strix.";
+  "Your findings are served by this Strix viewer and are not sent to Strix Cloud.";
 
 const SEVERITY_ORDER: VulnerabilitySeverity[] = ["critical", "high", "medium", "low"];
 const POLL_MS = 500;
@@ -372,6 +372,15 @@ export default function App() {
             <div className="rounded-xl border border-[#222] bg-[rgba(255,255,255,0.02)] p-10 text-center">
               <div className="w-6 h-6 mx-auto mb-3 rounded-full border-2 border-[#333] border-t-white animate-spin" />
               <p className="text-sm text-[#888]">Loading run data…</p>
+            </div>
+          ) : run?.raw.no_runs === true ? (
+            <div className="rounded-xl border border-[#222] bg-[rgba(255,255,255,0.02)] p-10 text-center">
+              <Radar className="mx-auto mb-3 h-7 w-7 text-[#666]" aria-hidden="true" />
+              <h1 className="text-lg font-semibold text-white">Strix Viewer is ready</h1>
+              <p className="mx-auto mt-2 max-w-lg text-sm text-[#888]">
+                No scan results have been published yet. This viewer does not execute scans;
+                an independently managed, authorized Strix worker can publish completed results here.
+              </p>
             </div>
           ) : run && counts ? (
             <>
