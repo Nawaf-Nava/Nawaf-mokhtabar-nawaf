@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z "${STRIX_VIEWER_USERNAME:-}" || -z "${STRIX_VIEWER_PASSWORD:-}" ]]; then
-    echo "ERROR: Set STRIX_VIEWER_USERNAME and STRIX_VIEWER_PASSWORD for public deployment." >&2
-    exit 1
-fi
-if (( ${#STRIX_VIEWER_PASSWORD} < 20 )); then
-    echo "ERROR: STRIX_VIEWER_PASSWORD must contain at least 20 characters." >&2
-    exit 1
-fi
 if [[ -n "${STRIX_WORKER_TOKEN:-}" ]] && (( ${#STRIX_WORKER_TOKEN} < 32 )); then
     echo "ERROR: STRIX_WORKER_TOKEN must contain at least 32 characters." >&2
     exit 1
