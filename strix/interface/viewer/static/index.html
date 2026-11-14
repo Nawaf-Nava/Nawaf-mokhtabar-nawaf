@@ -14,7 +14,7 @@
       (() => {
         const applyZanaxBrand = () => {
           document.title = "ZANAX | Security Lab";
-          document.querySelectorAll('aside header a[title], a[title="ZANAX Security Lab"]').forEach((el) => {
+          document.querySelectorAll('aside header a[title], a[title="ZANAX Security Lab"], a[title="Open Strix Cloud"]').forEach((el) => {
             const img = el.querySelector("img");
             if (img) { img.src = "./zanax-mark.svg"; img.alt = "ZANAX"; }
             el.querySelectorAll("span, div").forEach((node) => {
