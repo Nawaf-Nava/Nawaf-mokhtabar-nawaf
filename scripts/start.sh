@@ -14,24 +14,24 @@ if [[ -n "${STRIX_WORKER_TOKEN:-}" ]] && (( ${#STRIX_WORKER_TOKEN} < 32 )); then
     exit 1
 fi
 
-if [[ ! -d /data ]]; then
-    echo "ERROR: Render persistent disk is not mounted at /data." >&2
-    exit 1
-fi
+# Render Free has no persistent disk. Keep results on the container's
+# writable ephemeral filesystem; they survive only until the instance is
+# replaced, restarted, or redeployed.
+RUNS_DIR="${STRIX_RUNS_DIR:-/tmp/strix_runs}"
+mkdir -p "$RUNS_DIR"
 
-mkdir -p /data/strix_runs
 if [[ -e /app/strix_runs || -L /app/strix_runs ]]; then
-    if [[ ! -L /app/strix_runs || "$(readlink -f /app/strix_runs)" != "/data/strix_runs" ]]; then
+    if [[ ! -L /app/strix_runs || "$(readlink -f /app/strix_runs)" != "$(readlink -f "$RUNS_DIR")" ]]; then
         echo "ERROR: Refusing to replace unexpected /app/strix_runs path." >&2
         exit 1
     fi
 else
-    ln -s /data/strix_runs /app/strix_runs
+    ln -s "$RUNS_DIR" /app/strix_runs
 fi
 
 PORT="${PORT:-10000}"
 HOST="0.0.0.0"
 
-echo "Starting Strix Viewer on ${HOST}:${PORT}; scan execution is delegated to an external worker."
+echo "Starting Strix Viewer on ${HOST}:${PORT}; results use ephemeral storage at ${RUNS_DIR}; scan execution is delegated to an external worker."
 cd /app
-exec strix view --empty --host "${HOST}" --port "${PORT}" --no-open
+exec strix view --empty --host "$HOST" --port "$PORT" --no-open
