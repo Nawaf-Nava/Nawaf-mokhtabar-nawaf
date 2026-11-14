@@ -36,11 +36,11 @@ executes `strix view --empty --host 0.0.0.0 --port "$PORT" --no-open` as PID 1.
 Results remain available only while the current container filesystem retains
 them; a restart, redeploy, or instance replacement can erase them. Download
 or export anything important before the service is recycled.
-The viewer's existing session-cookie checks still protect scan data and
-mutations. HTTP Basic authentication is additionally required for public
-viewer routes when configured; health probes bypass it. Use the Render HTTPS
-endpoint. Render disks cause a short interruption during deploys and cannot
-be horizontally scaled.
+HTTP Basic authentication is disabled for this public demo. Anyone who can
+reach the Render URL can view available run data. The server issues a
+per-browser HttpOnly, Secure, SameSite=Strict cookie for API requests; this
+is not an access-control barrier. Do not upload private or sensitive scan
+results. Use the Render HTTPS endpoint.
 
 ## Required environment variables
 
@@ -48,12 +48,11 @@ Set these in the Render service's environment settings as secrets:
 
 | Name | Required | Notes |
 | --- | --- | --- |
-| `STRIX_VIEWER_USERNAME` | Yes | HTTP Basic authentication user. |
-| `STRIX_VIEWER_PASSWORD` | Yes | At least 20 characters; use a generated secret. |
 | `STRIX_WORKER_TOKEN` | Blueprint-generated | Render generates a base64-encoded 256-bit value. Copy it securely to the trusted worker; remove the variable to disable upload. |
 
 The Blueprint sets `STRIX_RUNS_DIR=/tmp/strix_runs` for temporary storage.
-Render supplies `PORT` (normally 10000);
+No viewer username or password is required; HTTP Basic authentication is
+disabled. Render supplies `PORT` (normally 10000);
 leave it Render-managed. Do not set `LLM_API_KEY` on the viewer; the web
 service does not scan. A scan worker needs its own model/provider credentials
 and normal Strix settings in its own secret store.
