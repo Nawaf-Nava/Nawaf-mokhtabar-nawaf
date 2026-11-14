@@ -252,16 +252,15 @@ your worker's own operations and access controls.
 
   | Variable | Required | Purpose |
   | --- | --- | --- |
-  | `STRIX_VIEWER_USERNAME` | Yes | HTTP Basic auth username for the public viewer. |
-  | `STRIX_VIEWER_PASSWORD` | Yes | HTTP Basic auth password, at least 20 characters. |
   | `STRIX_WORKER_TOKEN` | Blueprint-generated | Render generates a 256-bit bearer secret for completed-run uploads. Copy it securely to the isolated worker; remove the variable to disable uploads. |
   | `STRIX_RUNS_DIR` | Set by Blueprint | Temporary run storage path (`/tmp/strix_runs`); contents are not durable. |
   | `PORT` | Render-managed | Public HTTP listener port; do not override unless needed. |
 
-  Generate independent high-entropy credentials with a password manager. The
-  viewer uses HTTPS at Render's public edge; the session cookie is HttpOnly,
-  Secure, and SameSite=Strict. `/health` intentionally remains reachable
-  without viewer credentials for Render's health monitor.
+  HTTP Basic authentication is disabled for this public demo. Anyone who can
+  reach the URL can open the viewer and see available run data. The app issues
+  a per-browser HttpOnly, Secure, SameSite=Strict session cookie for API
+  requests; this cookie is not a login barrier. Do not upload private,
+  confidential, or sensitive scan results. `/health` remains public.
 4. Point `STRIX_VIEWER_URL` at the viewer's HTTPS origin on the isolated
   worker, set the same `STRIX_WORKER_TOKEN` there, and set
   `STRIX_RUNS_DIR` to the worker's local Strix results directory. After an
