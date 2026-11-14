@@ -2,14 +2,32 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="./logo.png" />
+    <link rel="icon" type="image/svg+xml" href="./zanax-mark.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
-    <title>Strix Results</title>
+    <title>ZANAX | Security Lab</title>
     <script type="module" crossorigin src="./assets/index-B-m86jWw.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-Dx6rJHWS.css">
   </head>
   <body>
+    <script>
+      (() => {
+        const applyZanaxBrand = () => {
+          document.title = "ZANAX | Security Lab";
+          document.querySelectorAll('aside header a[title], a[title="ZANAX Security Lab"]').forEach((el) => {
+            const img = el.querySelector("img");
+            if (img) { img.src = "./zanax-mark.svg"; img.alt = "ZANAX"; }
+            el.querySelectorAll("span, div").forEach((node) => {
+              if (node.childElementCount === 0 && node.textContent.trim() === "Strix") node.textContent = "ZANAX";
+              if (node.childElementCount === 0 && node.textContent.trim() === "S") node.textContent = "Z";
+            });
+            el.href = "/";
+          });
+        };
+        new MutationObserver(applyZanaxBrand).observe(document.documentElement, { childList: true, subtree: true });
+        applyZanaxBrand();
+      })();
+    </script>
     <div id="root"></div>
   </body>
 </html>
